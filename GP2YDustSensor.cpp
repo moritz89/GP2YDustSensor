@@ -1,12 +1,11 @@
 #include <Arduino.h>
-
 #include "GP2YDustSensor.h"
 
 /**
  * @param GP2YDustSensorType type use one of the two supported types
  * @param uint8_t ledOutputPin - the GPIO pin powering up the Sharp IR LED
  * @param uint8_t analogReadPin - the analog input pin connected from the Sharp analog output (Vo).
- * On ESP8266 there is a single A0 pin
+ * On ESP8266 and ESP32X Series there is a single A0 pin
  * @param uint16_t runningAverageCount - number of samples taken for the running average.
  * use 0 to disable running average
  */
@@ -27,7 +26,6 @@ GP2YDustSensor::GP2YDustSensor(GP2YDustSensorType type,
         case GP2Y1010AU0F:
             // sensitivity: min/typ/max: 0.425 / 0.5 / 0.75 
             // output voltage at no dust: min/typ/max 0v / 0.9v / 1.5v
-            
             this->minZeroDustVoltage = 0;
             this->typZeroDustVoltage = 0.9;
             this->maxZeroDustVoltage = 1.5;
@@ -36,7 +34,6 @@ GP2YDustSensor::GP2YDustSensor(GP2YDustSensorType type,
         case GP2Y1014AU0F:
             // sensitivity: min/typ/max: 0.35 / 0.5 / 0.65 
             // output voltage at no dust: min/typ/max: 0.1v / 0.6v / 1.1v
-
             this->minZeroDustVoltage = 0.1;
             this->typZeroDustVoltage = 0.6;
             this->maxZeroDustVoltage = 1.1;
@@ -67,7 +64,7 @@ void GP2YDustSensor::begin()
 
 /**
  * Sets the voltage at no dust. This baseline is set automatically to a typical value depending on the sensor type
- * But yoy have the option to tweak it
+ * But you have the option to tweak it
  * 
  * @param float zeroDustVoltage
  */
@@ -128,7 +125,7 @@ float GP2YDustSensor::getSensitivity()
 /**
  * Raw sensor reading from ADC
  * 
- * @return uint16_t value between 0 - 1024
+ * @return uint16_t value between 0 - 4096 (for a 12-bit ADC on ESP32S3)
  */
 uint16_t GP2YDustSensor::readDustRawOnce()
 {
@@ -166,10 +163,13 @@ uint16_t GP2YDustSensor::getDustDensity(uint16_t numSamples)
 
     avgRaw = total / numSamples;
 
-    // we scale up the read ADC voltage to the sensor's 5V output range
-    // so we can interpret the results based on voltage
-    // we assume a 10 bit ADC resolution currently given by analogRead()
-    float scaledVoltage = avgRaw * (5.0 / 1024) * calibrationFactor;
+    // For ESP32S3 with a 12-bit ADC and a 3.3V reference (after voltage division),
+    // first the actual voltage would be:
+    //   avgRaw * (3.3 / 4096)
+    // But since we use a voltage divider to scale down a 5V signal,
+    // we scale the reading back up to 5V by multiplying by (5.0 / 3.3).
+    // Combining both factors simplifies to (5.0 / 4096):
+    float scaledVoltage = avgRaw * (5.0 / 4096) * calibrationFactor;
 
     // determine new baseline candidate
     if (scaledVoltage < this->minDustVoltage && scaledVoltage >= minZeroDustVoltage && scaledVoltage <= maxZeroDustVoltage) {
@@ -181,15 +181,7 @@ uint16_t GP2YDustSensor::getDustDensity(uint16_t numSamples)
     if (scaledVoltage < zeroDustVoltage) {
         dustDensity = 0;
     } else {
-        // taken from the graph, at 0.4mg dust density we should have 3.05 volts
-        // 3.05v ................ 0.4
-        // scaledVoltage ........ ?
-        // ? = scaledVoltage * 0.4 / 3.05
-        // We will try to be smarter and adjust the graph
-        // according to the zero dust voltage offset and sensitivity
-        // typical zero dust is 0.6V but I observed 0.4V on my sensor
-        // sensor sensitivy is 0.5V according to the datasheet
-        // dustDensity is expressed in ug/m3
+        // Calculate dust density (in ug/m3) based on sensitivity and offset.
         dustDensity = (scaledVoltage - zeroDustVoltage) / this->sensitivity * 100;
     }
 
@@ -213,7 +205,6 @@ uint16_t GP2YDustSensor::getDustDensity(uint16_t numSamples)
  * you will get a running average for 1 minute
  * 
  * @return uint16_t average dust density value between 0 and 600 ug/m3
- * 
  */
 uint16_t GP2YDustSensor::getRunningAverage()
 {
@@ -222,8 +213,8 @@ uint16_t GP2YDustSensor::getRunningAverage()
         //throw std::runtime_error("Running average was disabled from constructor. Use runningAverageCount to specify the size.");
     }
 
-  float runningAverage = 0;
-  uint16_t sampleCount = 0;
+    float runningAverage = 0;
+    uint16_t sampleCount = 0;
 
     for (uint16_t i = 0; i < this->runningAverageCount; i++) {
         if (this->runningAverageBuffer[i] != -1) {
@@ -239,13 +230,13 @@ uint16_t GP2YDustSensor::getRunningAverage()
     runningAverage /= sampleCount;
 
     return round(runningAverage);
-} 
+}
 
 /**
  * Set a calibration factor to improve accuracy
  * Calibrate against known source / precision instrument
  * 
- * @oaram float slope
+ * @param float slope
  */
 void GP2YDustSensor::setCalibrationFactor(float slope)
 {
