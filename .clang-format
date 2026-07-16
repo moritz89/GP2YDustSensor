@@ -1,0 +1,22 @@
+IndentWidth: 4
+AlignAfterOpenBracket: Align
+BinPackParameters: false
+BinPackArguments: false
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: true
+  AfterStruct: true
+  AfterEnum: true
+  AfterFunction: true
+  AfterNamespace: true
+
+  AfterControlStatement: Never
+  BeforeElse: false
+  BeforeCatch: false
+
+AllowShortFunctionsOnASingleLine: None
+IndentCaseLabels: true
+ColumnLimit: 100
+IndentAccessModifiers: true
+AllowShortEnumsOnASingleLine: false
+ReflowComments: Never

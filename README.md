@@ -33,7 +33,7 @@ GP2YDustSensor::GP2YDustSensor(GP2YDustSensorType type,
 
 The forth parameter can be used to specify how many samples are used for calculating the running average.
 
-Call `dustSensor.init()` somewhere in the `setup()` method to initialize the sensor.
+Call `dustSensor.begin()` somewhere in the `setup()` method to initialize the sensor.
 Then use `dustSensor.getDustDensity()` to obtain an average dust average for the number of samples specified (default 20):
 
 ```c++
@@ -74,10 +74,36 @@ void loop() {
 To read a single sample 10ms are needed. By default, `getDustDensity()` reads 20 samples and returns an average. This means a reading will take about 200ms.
 Tweak the number of samples either by reducing the number of samples to read faster or increase them to reduce noise by increasing the window of time for averaging. 
 
+### Non-blocking measurement
+
+API to use the non-blocking API:
+
+```c++
+bool GP2YDustSensor::startDustDensityMeasurement(uint16_t numSamples = 20);
+bool GP2YDustSensor::handleDustDensityMeasurement();
+bool GP2YDustSensor::isDustDensityMeasurementInProgress() const;
+bool GP2YDustSensor::isDustDensityMeasurementReady() const;
+uint16_t GP2YDustSensor::getLastDustDensity() const;
+uint32_t GP2YDustSensor::getDustDensityRemainingTimeUs() const;
+```
+
+`startDustDensityMeasurement()` starts sampling and returns immediately.
+Call `handleDustDensityMeasurement()` from your main loop/task. It returns `true` once average value is ready.
+Read result with `getLastDustDensity()`.
+
+```c++
+if (dustSensor.startDustDensityMeasurement(20)) {
+  // later in loop/task:
+  if (dustSensor.handleDustDensityMeasurement()) {
+    uint16_t value = dustSensor.getLastDustDensity();
+  }
+}
+```
+
 ### Baseline adjustment (Zero dust value)
 
 The Sharp sensors don't normally output 0 when no dust is present but they offer something like 0.6V , sometimes less, sometimes more. This number is not fixed.
-This is accordint to the specs.
+This is according to the specs.
 After this value, the graph is mostly liniar.  
 A typical baseline is set automatically by the library for your sensor, but you have the option to tweak this value.
 

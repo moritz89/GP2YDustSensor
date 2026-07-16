@@ -1,0 +1,41 @@
+{
+    "name": "Sharp GP2Y Dust Sensor",
+    "version": "1.2.0",
+    "description": "Read dust density using Sharp GP2Y Dust Sensors like GP2Y1010AU0F and GP2Y1014AU0F. Supports calibration, multi-sampling average, and running average.",
+    "keywords": [
+        "dust",
+        "sensor",
+        "sharp",
+        "gp2y1010au0f",
+        "gp2y1014au0f",
+        "air-quality",
+        "pm"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/luciansabo/GP2YDustSensor.git"
+    },
+    "homepage": "https://github.com/luciansabo/GP2YDustSensor",
+    "authors": [
+        {
+            "name": "Lucian Sabo",
+            "email": "luciansabo@gmail.com"
+        },
+        {
+            "name": "Moritz Ulmer",
+            "email": "moritz.ulmer@posteo.de",
+            "url": "https://github.com/moritz89",
+            "maintainer": true
+        }
+    ],
+    "license": "MIT",
+    "frameworks": [
+        "arduino"
+    ],
+    "platforms": "*",
+    "headers": "GP2YDustSensor.h",
+    "examples": [
+        "examples/BasicReading/BasicReading.ino",
+        "examples/DriftCorrection/DriftCorrection.ino"
+    ]
+}

@@ -1,5 +1,5 @@
-#include <Arduino.h>
 #include "GP2YDustSensor.h"
+#include <Arduino.h>
 
 /**
  * @param GP2YDustSensorType type use one of the two supported types
@@ -19,12 +19,21 @@ GP2YDustSensor::GP2YDustSensor(GP2YDustSensorType type,
     this->type = type;
     this->sensitivity = 0.5; // default sensitivity from datasheet
     this->nextRunningAverageCounter = 0;
+    this->runningAverageCounter = 0;
+    this->runningAverageBuffer.reset();
     this->hasBaselineCandidate = false;
     this->readCount = 0;
-    
+    this->measurementInProgress = false;
+    this->measurementReady = false;
+    this->measurementTargetSamples = 0;
+    this->measurementCollectedSamples = 0;
+    this->measurementRawTotal = 0;
+    this->nextSampleAtUs = 0;
+    this->lastDustDensity = 0;
+
     switch (type) {
         case GP2Y1010AU0F:
-            // sensitivity: min/typ/max: 0.425 / 0.5 / 0.75 
+            // sensitivity: min/typ/max: 0.425 / 0.5 / 0.75
             // output voltage at no dust: min/typ/max 0v / 0.9v / 1.5v
             this->minZeroDustVoltage = 0;
             this->typZeroDustVoltage = 0.9;
@@ -32,7 +41,7 @@ GP2YDustSensor::GP2YDustSensor(GP2YDustSensorType type,
             this->zeroDustVoltage = this->minDustVoltage = this->typZeroDustVoltage;
             break;
         case GP2Y1014AU0F:
-            // sensitivity: min/typ/max: 0.35 / 0.5 / 0.65 
+            // sensitivity: min/typ/max: 0.35 / 0.5 / 0.65
             // output voltage at no dust: min/typ/max: 0.1v / 0.6v / 1.1v
             this->minZeroDustVoltage = 0.1;
             this->typZeroDustVoltage = 0.6;
@@ -46,7 +55,7 @@ GP2YDustSensor::GP2YDustSensor(GP2YDustSensorType type,
 
     this->runningAverageCount = runningAverageCount;
     if (this->runningAverageCount) {
-        this->runningAverageBuffer = new int16_t[this->runningAverageCount];
+        this->runningAverageBuffer = std::make_unique<int16_t[]>(this->runningAverageCount);
         // init with -1
         for (uint16_t i = 0; i < this->runningAverageCount; i++) {
             this->runningAverageBuffer[i] = -1;
@@ -65,7 +74,7 @@ void GP2YDustSensor::begin()
 /**
  * Sets the voltage at no dust. This baseline is set automatically to a typical value depending on the sensor type
  * But you have the option to tweak it
- * 
+ *
  * @param float zeroDustVoltage
  */
 void GP2YDustSensor::setBaseline(float zeroDustVoltage)
@@ -79,12 +88,12 @@ float GP2YDustSensor::getBaseline()
 }
 
 /**
-* Returns the new baseline candidate, determined after reading enough samples
-* (you need at least 1 minute worth of samples to be of any help) 
-* 
-* @return float baseline candidate scaled voltage
-* @see GP2YDustSensor::setBaseline
-*/
+ * Returns the new baseline candidate, determined after reading enough samples
+ * (you need at least 1 minute worth of samples to be of any help)
+ *
+ * @return float baseline candidate scaled voltage
+ * @see GP2YDustSensor::setBaseline
+ */
 float GP2YDustSensor::getBaselineCandidate()
 {
     if (!hasBaselineCandidate) {
@@ -105,8 +114,8 @@ float GP2YDustSensor::getBaselineCandidate()
  * Set sensitivity in volts/100ug/m3
  * Typical sensitivity is 0.5V, set by default
  * GP2Y1010AU0F sensitivity: min/typ/max: 0.425 / 0.5 / 0.75
- * GP2Y1014AU0F sensitivity: min/typ/max: 0.35 / 0.5 / 0.65 
- * 
+ * GP2Y1014AU0F sensitivity: min/typ/max: 0.35 / 0.5 / 0.65
+ *
  * @param float sensitivity expressed in volts
  */
 void GP2YDustSensor::setSensitivity(float sensitivity)
@@ -124,7 +133,7 @@ float GP2YDustSensor::getSensitivity()
 
 /**
  * Raw sensor reading from ADC
- * 
+ *
  * @return uint16_t value between 0 - 4096 (for a 12-bit ADC on ESP32S3)
  */
 uint16_t GP2YDustSensor::readDustRawOnce()
@@ -147,21 +156,124 @@ uint16_t GP2YDustSensor::readDustRawOnce()
 /**
  * Get average dust density between numSamples in ug/m3
  * With the default value of numSamples (20) the reading should take 200ms
- * 
+ *
  * @return uint16_t dust density between 0 and 600 ug/m3
  */
 uint16_t GP2YDustSensor::getDustDensity(uint16_t numSamples)
 {
-    uint32_t total = 0;
-    uint16_t avgRaw;
-  
-    for (uint8_t i = 0; i < numSamples; i++) {
-        total += this->readDustRawOnce();
-        // Wait for remainder of the 10ms cycle = 10000 - 280 - 100 microseconds.
-        delayMicroseconds(9620);
+    if (numSamples == 0) {
+        return this->lastDustDensity;
     }
 
-    avgRaw = total / numSamples;
+    uint32_t total = 0;
+
+    for (uint16_t i = 0; i < numSamples; i++) {
+        total += this->readDustRawOnce();
+        if (i < (numSamples - 1)) {
+            // Wait for remainder of 10ms cycle = 10000 - 280 - 100 microseconds.
+            delayMicroseconds(9620);
+        }
+    }
+
+    uint16_t avgRaw = total / numSamples;
+
+    this->lastDustDensity = this->calculateDustDensityFromRaw(avgRaw);
+
+    return this->lastDustDensity;
+}
+
+bool GP2YDustSensor::startDustDensityMeasurement(uint16_t numSamples)
+{
+    if (numSamples == 0) {
+        this->measurementInProgress = false;
+        this->measurementReady = false;
+        this->measurementTargetSamples = 0;
+        this->measurementCollectedSamples = 0;
+        this->measurementRawTotal = 0;
+        return false;
+    }
+
+    this->measurementTargetSamples = numSamples;
+    this->measurementCollectedSamples = 1;
+    this->measurementRawTotal = this->readDustRawOnce();
+    this->measurementInProgress = true;
+    this->measurementReady = false;
+    this->nextSampleAtUs = micros() + SAMPLE_PERIOD_US;
+
+    if (this->measurementCollectedSamples >= this->measurementTargetSamples) {
+        uint16_t avgRaw = this->measurementRawTotal / this->measurementCollectedSamples;
+        this->lastDustDensity = this->calculateDustDensityFromRaw(avgRaw);
+        this->measurementInProgress = false;
+        this->measurementReady = true;
+    }
+
+    return true;
+}
+
+bool GP2YDustSensor::handleDustDensityMeasurement()
+{
+    if (!this->measurementInProgress) {
+        return this->measurementReady;
+    }
+
+    uint32_t nowUs = micros();
+    if ((int32_t)(nowUs - this->nextSampleAtUs) < 0) {
+        return false;
+    }
+
+    this->measurementRawTotal += this->readDustRawOnce();
+    this->measurementCollectedSamples++;
+
+    if (this->measurementCollectedSamples >= this->measurementTargetSamples) {
+        uint16_t avgRaw = this->measurementRawTotal / this->measurementCollectedSamples;
+        this->lastDustDensity = this->calculateDustDensityFromRaw(avgRaw);
+        this->measurementInProgress = false;
+        this->measurementReady = true;
+        return true;
+    }
+
+    this->nextSampleAtUs += SAMPLE_PERIOD_US;
+    return false;
+}
+
+bool GP2YDustSensor::isDustDensityMeasurementInProgress() const
+{
+    return this->measurementInProgress;
+}
+
+bool GP2YDustSensor::isDustDensityMeasurementReady() const
+{
+    return this->measurementReady;
+}
+
+uint16_t GP2YDustSensor::getLastDustDensity() const
+{
+    return this->lastDustDensity;
+}
+
+uint32_t GP2YDustSensor::getDustDensityRemainingTimeUs() const
+{
+    if (!this->measurementInProgress) {
+        return 0;
+    }
+
+    uint16_t remainingSamples = this->measurementTargetSamples - this->measurementCollectedSamples;
+    if (remainingSamples == 0) {
+        return 0;
+    }
+
+    uint32_t nowUs = micros();
+    uint32_t waitToNextUs = 0;
+    if ((int32_t)(nowUs - this->nextSampleAtUs) < 0) {
+        waitToNextUs = this->nextSampleAtUs - nowUs;
+    }
+
+    return waitToNextUs + (remainingSamples - 1) * SAMPLE_PERIOD_US;
+}
+
+uint16_t GP2YDustSensor::calculateDustDensityFromRaw(uint16_t avgRaw)
+{
+    this->measurementReady = false;
 
     // For ESP32S3 with a 12-bit ADC and a 3.3V reference (after voltage division),
     // first the actual voltage would be:
@@ -172,7 +284,8 @@ uint16_t GP2YDustSensor::getDustDensity(uint16_t numSamples)
     float scaledVoltage = avgRaw * (5.0 / 4096) * calibrationFactor;
 
     // determine new baseline candidate
-    if (scaledVoltage < this->minDustVoltage && scaledVoltage >= minZeroDustVoltage && scaledVoltage <= maxZeroDustVoltage) {
+    if (scaledVoltage < this->minDustVoltage && scaledVoltage >= minZeroDustVoltage &&
+        scaledVoltage <= maxZeroDustVoltage) {
         this->minDustVoltage = scaledVoltage;
     }
 
@@ -226,7 +339,7 @@ uint16_t GP2YDustSensor::getRunningAverage()
     if (sampleCount == 0) {
         return 0;
     }
-    
+
     runningAverage /= sampleCount;
 
     return round(runningAverage);
@@ -235,19 +348,12 @@ uint16_t GP2YDustSensor::getRunningAverage()
 /**
  * Set a calibration factor to improve accuracy
  * Calibrate against known source / precision instrument
- * 
+ *
  * @param float slope
  */
 void GP2YDustSensor::setCalibrationFactor(float slope)
 {
     this->calibrationFactor = slope;
-}
-
-GP2YDustSensor::~GP2YDustSensor()
-{
-    if (this->runningAverageBuffer) {
-        delete this->runningAverageBuffer;
-    }
 }
 
 void GP2YDustSensor::updateRunningAverage(uint16_t value)
@@ -256,6 +362,6 @@ void GP2YDustSensor::updateRunningAverage(uint16_t value)
 
     this->nextRunningAverageCounter++;
     if (this->nextRunningAverageCounter >= this->runningAverageCount) {
-        this->nextRunningAverageCounter = 0; 
+        this->nextRunningAverageCounter = 0;
     }
 }
